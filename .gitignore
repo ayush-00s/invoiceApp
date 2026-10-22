@@ -1,4 +1,5 @@
 secrets.toml
+secrets.toml.example
 .venv/
 __pycache__/
 *.pyc
