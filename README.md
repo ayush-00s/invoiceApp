@@ -12,4 +12,4 @@ Files
 
 Secrets (set in Streamlit Cloud, never in GitHub):
     MONGO_URI    = "mongodb+srv://invoiceuser:PASSWORD@cluster0.7y0t3jn.mongodb.net/"
-    APP_PASSWORD = "the password your father types to open the app"
+    APP_PASSWORD = "the password for your app"
