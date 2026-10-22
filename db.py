@@ -3,7 +3,8 @@ from datetime import datetime, timezone
 
 import certifi
 import streamlit as st
-from pymongo import MongoClient, ReturnDocument, ASCENDING, DESCENDING
+from pymongo import MongoClient, ASCENDING, DESCENDING
+from pymongo.errors import DuplicateKeyError
 
 DB_NAME = "invoice_app"
 
@@ -21,7 +22,10 @@ def get_db():
 
 
 def ensure_indexes(db):
-    db.invoices.create_index([("invoice_no", ASCENDING)], unique=True)
+    # An invoice number must be unique within a financial year (so "2" can be used again next year).
+    if "invoice_no_1" in db.invoices.index_information():
+        db.invoices.drop_index("invoice_no_1")  # old rule: unique across all years
+    db.invoices.create_index([("fy", ASCENDING), ("invoice_no", ASCENDING)], unique=True)
     db.invoices.create_index([("created_at", DESCENDING)])
     db.customers.create_index([("name", ASCENDING)])
 
@@ -45,14 +49,6 @@ def delete_customer(db, customer_id):
 
 
 # ---------- invoices ----------
-def next_sequence(db, key: str) -> int:
-    """Atomic counter: two saves can never get the same number."""
-    doc = db.counters.find_one_and_update(
-        {"_id": key}, {"$inc": {"seq": 1}}, upsert=True, return_document=ReturnDocument.AFTER
-    )
-    return doc["seq"]
-
-
 def save_invoice(db, invoice: dict):
     invoice = {**invoice, "created_at": datetime.now(timezone.utc), "status": "active"}
     invoice["_id"] = db.invoices.insert_one(invoice).inserted_id
@@ -71,10 +67,13 @@ def set_invoice_status(db, invoice_id, status: str):
     db.invoices.update_one({"_id": invoice_id}, {"$set": {"status": status}})
 
 
-def create_invoice(db, invoice: dict, prefix: str, fy: str):
-    """Give the invoice the next number for its financial year and save it."""
-    from gst_utils import format_invoice_no
+def suggest_invoice_no(db, fy: str) -> str:
+    """Next plain number for this financial year: highest number used so far + 1."""
+    used = [int(d["invoice_no"]) for d in db.invoices.find({"fy": fy}, {"invoice_no": 1})
+            if str(d["invoice_no"]).isdigit()]
+    return str(max(used) + 1) if used else "1"
 
-    seq = next_sequence(db, f"invoice-{fy}")
-    invoice = {**invoice, "fy": fy, "seq": seq, "invoice_no": format_invoice_no(prefix, fy, seq)}
-    return save_invoice(db, invoice)
+
+def create_invoice(db, invoice: dict, fy: str, invoice_no: str):
+    """Save the invoice. Raises DuplicateKeyError if this number is already used in this financial year."""
+    return save_invoice(db, {**invoice, "fy": fy, "invoice_no": invoice_no.strip()})

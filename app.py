@@ -1,10 +1,12 @@
 """A2KT billing app (Streamlit). Run with: streamlit run app.py"""
 import hmac
+import re
 import time
 from datetime import date, datetime
 from decimal import Decimal
 
 import streamlit as st
+from pymongo.errors import DuplicateKeyError
 
 import config
 import db as dbm
@@ -142,7 +144,7 @@ ITEM_KEYS = ("it_desc_", "it_hsn_", "it_qty_", "it_unit_", "it_rate_")
 
 def reset_invoice_form():
     for key in list(st.session_state.keys()):
-        if key.startswith(ITEM_KEYS) or key in ("n_items", "saved_invoice", "inv_customer", "diff_ship",
+        if key.startswith(ITEM_KEYS + ("inv_no_",)) or key in ("n_items", "saved_invoice", "inv_customer", "diff_ship",
                                                 "ship_name", "ship_addr", "ship_gstin", "ship_state",
                                                 "gst_rate", "received"):
             st.session_state.pop(key, None)
@@ -153,7 +155,7 @@ def invoice_tab(db):
     if saved:
         st.success(f"Invoice {saved['invoice_no']} created and saved.")
         st.download_button("⬇️ Download invoice PDF", build_pdf(saved),
-                           file_name=saved["invoice_no"].replace("/", "-") + ".pdf",
+                           file_name="Invoice-" + saved["invoice_no"].replace("/", "-") + ".pdf",
                            mime="application/pdf", type="primary", width="stretch")
         st.caption("You can find this invoice again anytime in the 'Past invoices' tab.")
         if st.button("➕ Make another invoice", width="stretch"):
@@ -171,7 +173,12 @@ def invoice_tab(db):
     cid = st.selectbox("Who is this invoice for?", list(by_id), format_func=lambda v: by_id[v]["name"],
                        key="inv_customer")
     cust = by_id[cid]
-    inv_date = st.date_input("Invoice date", value=date.today(), format="DD/MM/YYYY")
+    d1, d2 = st.columns(2)
+    inv_date = d1.date_input("Invoice date", value=date.today(), format="DD/MM/YYYY")
+    fy = g.financial_year(inv_date)
+    suggested = dbm.suggest_invoice_no(db, fy)
+    inv_no = d2.text_input("Invoice number", value=suggested, max_chars=16,
+                           key=f"inv_no_{fy}_{suggested}", help="Filled in automatically. Change it only if you need to.").strip()
     st.caption(f"{cust['address']}  \nGSTIN: {cust.get('gstin') or '—'}  |  State: {state_name(cust['state_code'])}")
 
     diff = st.checkbox("Goods are being sent to a different address", key="diff_ship")
@@ -199,6 +206,10 @@ def invoice_tab(db):
         st.session_state["n_items"] = 1
     n = st.session_state["n_items"]
     items, errors = [], []
+    if not inv_no:
+        errors.append("Please enter the invoice number.")
+    elif not re.fullmatch(r"[A-Za-z0-9/-]{1,16}", inv_no):
+        errors.append("Invoice number can only have letters, numbers, / and -.")
     for i in range(n):
         with st.container(border=True):
             st.markdown(f"**Item {i + 1}**")
@@ -273,7 +284,10 @@ def invoice_tab(db):
             "customer_id": cust["_id"],
         }
         try:
-            doc = dbm.create_invoice(db, invoice, config.COMPANY["invoice_prefix"], g.financial_year(inv_date))
+            doc = dbm.create_invoice(db, invoice, fy, inv_no)
+        except DuplicateKeyError:
+            st.error(f"Invoice number {inv_no} is already used this year. Please type a different number.")
+            st.stop()
         except Exception:
             st.error("Could not save the invoice. Nothing was created. Please try again.")
             st.stop()
@@ -297,7 +311,7 @@ def history_tab(db):
     pick = st.selectbox("Open an invoice", list(by_id),
                         format_func=lambda v: f"{by_id[v]['invoice_no']} — {by_id[v]['bill_to']['name']}")
     inv = by_id[pick]
-    st.download_button("⬇️ Download PDF", build_pdf(inv), file_name=inv["invoice_no"].replace("/", "-") + ".pdf",
+    st.download_button("⬇️ Download PDF", build_pdf(inv), file_name="Invoice-" + inv["invoice_no"].replace("/", "-") + ".pdf",
                        mime="application/pdf", type="primary", width="stretch")
     with st.expander("Cancel / restore this invoice"):
         if inv.get("status") == "cancelled":

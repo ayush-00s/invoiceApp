@@ -161,4 +161,4 @@ def financial_year(d: date) -> str:
 
 
 def format_invoice_no(prefix: str, fy: str, seq: int) -> str:
-    return f"{prefix}/{fy}/{seq:04d}"
+    return f"{prefix}/{fy[2:]}/{seq:04d}"
